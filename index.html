@@ -1,0 +1,719 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>詩的気象現象 - Poetic Weather Phenomena</title>
+    <style>
+        body {
+            margin: 0;
+            overflow: hidden;
+            font-family: sans-serif;
+            background: #000;
+        }
+        canvas {
+            display: block;
+        }
+    </style>
+    <script type="importmap">
+        {
+            "imports": {
+                "three": "https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js"
+            }
+        }
+    </script>
+</head>
+<body>
+    <script type="module">
+        import * as THREE from 'three';
+        import { GLTFLoader } from 'https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/loaders/GLTFLoader.js';
+        import { TextGeometry } from 'https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/geometries/TextGeometry.js';
+        import { FontLoader } from 'https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/loaders/FontLoader.js';
+        import * as Tone from 'https://cdn.jsdelivr.net/npm/tone@14.8.49/+esm';
+
+        // Constants
+        const DURATION = 27; // Total animation duration in seconds
+        const PHASES = {
+            OPENING: { start: 0, end: 7 },
+            MIST: { start: 0, end: 7 },
+            CLOUDS: { start: 7, end: 14 },
+            RAIN: { start: 14, end: 21 },
+            AFTER_RAIN: { start: 21, end: 27 },
+            CLOSING: { start: 19, end: 27 }
+        };
+
+        // Scene setup
+        const scene = new THREE.Scene();
+        const camera = new THREE.PerspectiveCamera(75, window.innerWidth / window.innerHeight, 0.1, 1000);
+        const renderer = new THREE.WebGLRenderer({ antialias: true });
+        renderer.setSize(window.innerWidth, window.innerHeight);
+        document.body.appendChild(renderer.domElement);
+
+        // Camera position
+        camera.position.set(0, 10, 30);
+        camera.lookAt(0, 0, 0);
+
+        // Lighting
+        const ambientLight = new THREE.AmbientLight(0xffffff, 0.6);
+        scene.add(ambientLight);
+
+        const directionalLight = new THREE.DirectionalLight(0xffffff, 0.8);
+        directionalLight.position.set(10, 20, 10);
+        scene.add(directionalLight);
+
+        // Sky shader with time-based color transitions
+        const skyGeometry = new THREE.SphereGeometry(100, 32, 32);
+        const skyMaterial = new THREE.ShaderMaterial({
+            side: THREE.BackSide,
+            uniforms: {
+                time: { value: 0 },
+                topColor: { value: new THREE.Color(0x0a0a1a) },
+                bottomColor: { value: new THREE.Color(0x1a1a2e) },
+                offset: { value: 33 },
+                exponent: { value: 0.6 }
+            },
+            vertexShader: `
+                varying vec3 vWorldPosition;
+                void main() {
+                    vec4 worldPosition = modelMatrix * vec4(position, 1.0);
+                    vWorldPosition = worldPosition.xyz;
+                    gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
+                }
+            `,
+            fragmentShader: `
+                uniform vec3 topColor;
+                uniform vec3 bottomColor;
+                uniform float offset;
+                uniform float exponent;
+                uniform float time;
+                varying vec3 vWorldPosition;
+                void main() {
+                    float h = normalize(vWorldPosition + offset).y;
+                    vec3 color = mix(bottomColor, topColor, max(pow(max(h, 0.0), exponent), 0.0));
+                    
+                    // 時間による色の変化
+                    if (time < 0.25) {
+                        // 朝霧 (0-7秒)
+                        color = mix(color, vec3(0.6, 0.65, 0.7), 0.3);
+                    } else if (time < 0.5) {
+                        // 昼の空 (7-14秒)
+                        vec3 dayColor = vec3(0.3, 0.5, 0.8);
+                        color = mix(color, dayColor, (time - 0.25) * 2.0);
+                    } else if (time < 0.75) {
+                        // 雨の空 (14-21秒)
+                        vec3 stormColor = vec3(0.2, 0.25, 0.35);
+                        color = mix(vec3(0.3, 0.5, 0.8), stormColor, (time - 0.5) * 4.0);
+                    } else {
+                        // 雨上がり (21-27秒)
+                        vec3 afterRainColor = vec3(0.35, 0.55, 0.85);
+                        color = mix(vec3(0.2, 0.25, 0.35), afterRainColor, (time - 0.75) * 4.0);
+                    }
+                    
+                    gl_FragColor = vec4(color, 1.0);
+                }
+            `
+        });
+        const sky = new THREE.Mesh(skyGeometry, skyMaterial);
+        scene.add(sky);
+
+        // Ground with procedural terrain
+        const groundGeometry = new THREE.PlaneGeometry(100, 100, 50, 50);
+        
+        // 地形の初期状態を保存
+        const groundPositions = groundGeometry.attributes.position.array;
+        const groundInitialZ = [];
+        for (let i = 0; i < groundPositions.length; i += 3) {
+            const x = groundPositions[i];
+            const y = groundPositions[i + 1];
+            // 初期の高さを保存
+            groundInitialZ.push(Math.sin(x * 0.1) * Math.cos(y * 0.1) * 3 + 
+                               Math.sin(x * 0.05) * 2 + 
+                               Math.random() * 1);
+            groundPositions[i + 2] = groundInitialZ[groundInitialZ.length - 1];
+        }
+        groundGeometry.attributes.position.needsUpdate = true;
+        
+        const groundMaterial = new THREE.MeshBasicMaterial({
+            color: 0x4488aa,
+            wireframe: true,
+            transparent: true,
+            opacity: 0.3
+        });
+        const ground = new THREE.Mesh(groundGeometry, groundMaterial);
+        ground.rotation.x = -Math.PI / 2;
+        ground.position.y = 0;
+        scene.add(ground);
+
+        // Store original positions for animation
+        const originalGroundPositions = new Float32Array(groundPositions);
+
+        // Particle systems
+        let mistParticles, cloudGroups = [], rainParticles;
+
+        // Mist particles
+        function createMist() {
+            const mistCount = 800;
+            const mistGeometry = new THREE.BufferGeometry();
+            const mistPositions = new Float32Array(mistCount * 3);
+            
+            for (let i = 0; i < mistCount; i++) {
+                mistPositions[i * 3] = (Math.random() - 0.5) * 100;
+                mistPositions[i * 3 + 1] = Math.random() * 20 - 5;
+                mistPositions[i * 3 + 2] = (Math.random() - 0.5) * 100;
+            }
+            
+            mistGeometry.setAttribute('position', new THREE.BufferAttribute(mistPositions, 3));
+            
+            const mistMaterial = new THREE.PointsMaterial({
+                color: 0xcccccc,
+                size: 2,
+                transparent: true,
+                opacity: 0.3,
+                blending: THREE.AdditiveBlending
+            });
+            
+            mistParticles = new THREE.Points(mistGeometry, mistMaterial);
+            scene.add(mistParticles);
+        }
+
+        // Cloud particles
+        function createClouds() {
+            const cloudCount = 50;
+            const numClouds = 8;
+            
+            for (let j = 0; j < numClouds; j++) {
+                const cloudGeometry = new THREE.BufferGeometry();
+                const cloudPositions = new Float32Array(cloudCount * 3);
+                
+                const centerX = (Math.random() - 0.5) * 80;
+                const centerY = 15 + Math.random() * 10;
+                const centerZ = (Math.random() - 0.5) * 80;
+                
+                for (let i = 0; i < cloudCount; i++) {
+                    cloudPositions[i * 3] = centerX + (Math.random() - 0.5) * 15;
+                    cloudPositions[i * 3 + 1] = centerY + (Math.random() - 0.5) * 5;
+                    cloudPositions[i * 3 + 2] = centerZ + (Math.random() - 0.5) * 15;
+                }
+                
+                cloudGeometry.setAttribute('position', new THREE.BufferAttribute(cloudPositions, 3));
+                
+                const cloudMaterial = new THREE.PointsMaterial({
+                    color: 0xffffff,
+                    size: 3,
+                    transparent: true,
+                    opacity: 0,
+                    blending: THREE.AdditiveBlending
+                });
+                
+                const cloud = new THREE.Points(cloudGeometry, cloudMaterial);
+                cloud.userData = { baseX: centerX, baseY: centerY, baseZ: centerZ, offset: j };
+                cloudGroups.push(cloud);
+                scene.add(cloud);
+            }
+        }
+
+        // Rain particles
+        function createRain() {
+            const rainCount = 3000;
+            const rainGeometry = new THREE.BufferGeometry();
+            const rainPositions = new Float32Array(rainCount * 3);
+            const rainVelocities = new Float32Array(rainCount);
+            
+            for (let i = 0; i < rainCount; i++) {
+                rainPositions[i * 3] = (Math.random() - 0.5) * 100;
+                rainPositions[i * 3 + 1] = Math.random() * 50 + 20;
+                rainPositions[i * 3 + 2] = (Math.random() - 0.5) * 100;
+                rainVelocities[i] = Math.random() * 0.5 + 0.5;
+            }
+            
+            rainGeometry.setAttribute('position', new THREE.BufferAttribute(rainPositions, 3));
+            rainGeometry.setAttribute('velocity', new THREE.BufferAttribute(rainVelocities, 1));
+            
+            const rainMaterial = new THREE.PointsMaterial({
+                color: 0x4444ff,
+                size: 0.5,
+                transparent: true,
+                opacity: 0
+            });
+            
+            rainParticles = new THREE.Points(rainGeometry, rainMaterial);
+            scene.add(rainParticles);
+        }
+
+        // Opening text
+        let openingText;
+        let textOriginalPositions = null;
+        let textVelocities = null;
+        let textIsScattered = false;
+        
+        function createOpeningText() {
+            const loader = new FontLoader();
+            loader.load(
+                'https://threejs.org/examples/fonts/helvetiker_regular.typeface.json',
+                (font) => {
+                    const textGeometry = new TextGeometry('SHIBUYA', {
+                        font: font,
+                        size: 5,
+                        height: 0.5,
+                        curveSegments: 12,
+                    });
+                    
+                    textGeometry.center();
+                    
+                    // 頂点の初期位置を保存
+                    const positions = textGeometry.attributes.position.array;
+                    textOriginalPositions = new Float32Array(positions.length);
+                    textVelocities = new Float32Array(positions.length);
+                    
+                    for (let i = 0; i < positions.length; i += 3) {
+                        textOriginalPositions[i] = positions[i];
+                        textOriginalPositions[i + 1] = positions[i + 1];
+                        textOriginalPositions[i + 2] = positions[i + 2];
+                        
+                        // 各頂点にランダムな速度を設定
+                        textVelocities[i] = (Math.random() - 0.5) * 0.3;
+                        textVelocities[i + 1] = (Math.random() - 0.5) * 0.3;
+                        textVelocities[i + 2] = (Math.random() - 0.5) * 0.3;
+                    }
+                    
+                    const textMaterial = new THREE.MeshBasicMaterial({
+                        color: 0xff0000,
+                        wireframe: true,
+                        transparent: true,
+                        opacity: 1.0
+                    });
+                    
+                    openingText = new THREE.Mesh(textGeometry, textMaterial);
+                    openingText.position.set(0, 5, 0);
+                    scene.add(openingText);
+                },
+                undefined,
+                (error) => {
+                    console.warn('Font loading failed, continuing without opening text:', error);
+                }
+            );
+        }
+
+        // Closing models (10 fish)
+        let closingModels = [];
+        function loadClosingModel() {
+            const loader = new GLTFLoader();
+            loader.load(
+                'https://raw.githubusercontent.com/KhronosGroup/glTF-Sample-Models/main/2.0/BarramundiFish/glTF/BarramundiFish.gltf',
+                (gltf) => {
+                    // 5匹の魚を作成
+                    for (let i = 0; i < 5; i++) {
+                        const fish = gltf.scene.clone();
+                        
+                        // ワイヤーフレーム表示に設定
+                        fish.traverse((child) => {
+                            if (child.isMesh) {
+                                child.material = child.material.clone();
+                                child.material.wireframe = true;
+                                child.material.transparent = true;
+                                child.material.opacity = 1.0;
+                            }
+                        });
+                        
+                        fish.scale.set(20, 20, 20);
+                        fish.position.set(0, 5, 0);
+                        fish.visible = false;
+                        fish.userData = {
+                            offset: i,
+                            yOffset: (Math.random() - 0.5) * 8,
+                            zOffset: (Math.random() - 0.5) * 10,
+                            speedMultiplier: 0.8 + Math.random() * 0.4
+                        };
+                        closingModels.push(fish);
+                        scene.add(fish);
+                    }
+                },
+                undefined,
+                (error) => {
+                    console.warn('GLTF model loading failed, continuing without closing model:', error);
+                }
+            );
+        }
+
+        // Music System
+        let synth, bassSynth, padSynth, rainSynth, reverb;
+        let musicStarted = false;
+        let currentPhase = null;
+        
+        function initMusic() {
+            // Reverb for atmospheric sound
+            reverb = new Tone.Reverb({ decay: 5, wet: 0.5 }).toDestination();
+            
+            // Synth for melodies
+            synth = new Tone.PolySynth(Tone.Synth, {
+                oscillator: { type: 'sine' },
+                envelope: { attack: 0.5, decay: 0.2, sustain: 0.3, release: 2 }
+            }).connect(reverb);
+            
+            // Bass synth
+            bassSynth = new Tone.Synth({
+                oscillator: { type: 'triangle' },
+                envelope: { attack: 0.1, decay: 0.2, sustain: 0.5, release: 1 }
+            }).connect(reverb);
+            
+            // Pad synth for ambient textures
+            padSynth = new Tone.PolySynth(Tone.Synth, {
+                oscillator: { type: 'sine' },
+                envelope: { attack: 2, decay: 1, sustain: 0.5, release: 3 }
+            }).connect(reverb);
+            
+            // Rain/noise synth
+            rainSynth = new Tone.Noise('brown').connect(reverb);
+            rainSynth.volume.value = -20;
+        }
+        
+        function playMistMusic() {
+            // 朝霧 - 柔らかく神秘的な音
+            const mistChords = ['C4', 'E4', 'G4'];
+            padSynth.triggerAttackRelease(mistChords, '4n');
+            
+            const mistSequence = new Tone.Sequence((time, note) => {
+                synth.triggerAttackRelease(note, '2n', time);
+            }, ['E5', 'D5', 'C5', 'G4'], '2n');
+            mistSequence.start(0);
+            mistSequence.loop = true;
+            
+            Tone.Transport.bpm.value = 60;
+            Tone.Transport.start();
+        }
+        
+        function playCloudsMusic() {
+            Tone.Transport.stop();
+            Tone.Transport.cancel();
+            
+            // 雲 - 明るく浮遊感のある音
+            const cloudChords = ['C4', 'E4', 'G4', 'B4'];
+            padSynth.triggerAttackRelease(cloudChords, '2n');
+            
+            const cloudSequence = new Tone.Sequence((time, note) => {
+                synth.triggerAttackRelease(note, '4n', time);
+                if (note === 'E5') {
+                    bassSynth.triggerAttackRelease('C2', '4n', time);
+                }
+            }, ['G4', 'A4', 'C5', 'E5', 'D5', 'C5', 'A4', 'G4'], '8n');
+            cloudSequence.start(0);
+            cloudSequence.loop = true;
+            
+            Tone.Transport.bpm.value = 90;
+            Tone.Transport.start();
+        }
+        
+        function playRainMusic() {
+            Tone.Transport.stop();
+            Tone.Transport.cancel();
+            
+            // 雨 - 激しく緊張感のある音
+            rainSynth.start();
+            
+            const rainChords = ['A3', 'C4', 'E4'];
+            padSynth.triggerAttackRelease(rainChords, '2n');
+            
+            const rainSequence = new Tone.Sequence((time, note) => {
+                synth.triggerAttackRelease(note, '16n', time);
+                bassSynth.triggerAttackRelease('A1', '8n', time);
+            }, ['A4', 'C5', 'E5', 'A5', 'G5', 'E5', 'C5', 'A4'], '16n');
+            rainSequence.start(0);
+            rainSequence.loop = true;
+            
+            Tone.Transport.bpm.value = 120;
+            Tone.Transport.start();
+        }
+        
+        function playAfterRainMusic() {
+            Tone.Transport.stop();
+            Tone.Transport.cancel();
+            
+            if (rainSynth) {
+                rainSynth.stop();
+            }
+            
+            // 雨上がり - 希望と明るさのある音
+            const afterRainChords = ['C4', 'E4', 'G4', 'C5'];
+            padSynth.triggerAttackRelease(afterRainChords, '1n');
+            
+            const afterRainSequence = new Tone.Sequence((time, note) => {
+                synth.triggerAttackRelease(note, '4n', time);
+                if (note === 'C5') {
+                    bassSynth.triggerAttackRelease('C2', '2n', time);
+                }
+            }, ['C5', 'D5', 'E5', 'G5', 'E5', 'D5', 'C5', 'G4'], '8n');
+            afterRainSequence.start(0);
+            afterRainSequence.loop = true;
+            
+            Tone.Transport.bpm.value = 100;
+            Tone.Transport.start();
+        }
+        
+        function stopAllMusic() {
+            Tone.Transport.stop();
+            if (rainSynth) {
+                rainSynth.stop();
+            }
+        }
+
+        // Initialize all elements
+        createMist();
+        createClouds();
+        createRain();
+        createOpeningText();
+        loadClosingModel();
+        initMusic();
+        
+        // User interaction to start audio context
+        document.addEventListener('click', async () => {
+            if (!musicStarted) {
+                await Tone.start();
+                musicStarted = true;
+                console.log('Music started');
+            }
+        });
+
+        // Animation
+        let startTime = Date.now();
+
+        function updatePhase(elapsed) {
+            const time = elapsed % DURATION;
+            
+            // Update sky shader time
+            skyMaterial.uniforms.time.value = (time / DURATION);
+            
+            // Music phase management
+            if (musicStarted) {
+                if (time >= PHASES.MIST.start && time < PHASES.CLOUDS.start && currentPhase !== 'mist') {
+                    currentPhase = 'mist';
+                    playMistMusic();
+                } else if (time >= PHASES.CLOUDS.start && time < PHASES.RAIN.start && currentPhase !== 'clouds') {
+                    currentPhase = 'clouds';
+                    playCloudsMusic();
+                } else if (time >= PHASES.RAIN.start && time < PHASES.AFTER_RAIN.start && currentPhase !== 'rain') {
+                    currentPhase = 'rain';
+                    playRainMusic();
+                } else if (time >= PHASES.AFTER_RAIN.start && currentPhase !== 'afterrain') {
+                    currentPhase = 'afterrain';
+                    playAfterRainMusic();
+                }
+            }
+            
+            // Opening phase
+            if (openingText) {
+                if (time >= PHASES.OPENING.start && time < PHASES.OPENING.end) {
+                    openingText.visible = true;
+                    const phaseTime = time - PHASES.OPENING.start;
+                    const phaseDuration = PHASES.OPENING.end - PHASES.OPENING.start;
+                    
+                    // 第1段階：表示（0-4秒）
+                    if (phaseTime < 4.0) {
+                        openingText.rotation.y = 0;
+                        textIsScattered = false;
+                        
+                        // 元の位置にリセット
+                        if (textOriginalPositions) {
+                            const positions = openingText.geometry.attributes.position.array;
+                            for (let i = 0; i < positions.length; i++) {
+                                positions[i] = textOriginalPositions[i];
+                            }
+                            openingText.geometry.attributes.position.needsUpdate = true;
+                            openingText.material.opacity = 1.0;
+                        }
+                    } 
+                    // 第2段階：頂点を散らす（4-7秒）
+                    else {
+                        const scatterTime = phaseTime - 4.0;
+                        
+                        if (textOriginalPositions && textVelocities) {
+                            const positions = openingText.geometry.attributes.position.array;
+                            
+                            for (let i = 0; i < positions.length; i += 3) {
+                                positions[i] += textVelocities[i];
+                                positions[i + 1] += textVelocities[i + 1];
+                                positions[i + 2] += textVelocities[i + 2];
+                            }
+                            
+                            openingText.geometry.attributes.position.needsUpdate = true;
+                            
+                            // フェードアウト（3秒かけて）
+                            openingText.material.opacity = Math.max(0, 1.0 - scatterTime / 3.0);
+                            textIsScattered = true;
+                        }
+                    }
+                } else {
+                    openingText.visible = false;
+                }
+            }
+            
+            // Mist phase
+            if (mistParticles) {
+                if (time >= PHASES.MIST.start && time < PHASES.MIST.end) {
+                    const progress = (time - PHASES.MIST.start) / (PHASES.MIST.end - PHASES.MIST.start);
+                    mistParticles.material.opacity = 0.3 * (1 - progress * 0.5);
+                    
+                    const positions = mistParticles.geometry.attributes.position.array;
+                    for (let i = 0; i < positions.length; i += 3) {
+                        positions[i + 1] += 0.02;
+                        if (positions[i + 1] > 30) {
+                            positions[i + 1] = -5;
+                        }
+                    }
+                    mistParticles.geometry.attributes.position.needsUpdate = true;
+                } else {
+                    mistParticles.material.opacity = 0;
+                }
+            }
+            
+            // Cloud phase
+            if (time >= PHASES.CLOUDS.start && time < PHASES.CLOUDS.end) {
+                const progress = (time - PHASES.CLOUDS.start) / (PHASES.CLOUDS.end - PHASES.CLOUDS.start);
+                
+                cloudGroups.forEach((cloud, index) => {
+                    cloud.material.opacity = Math.min(0.8, progress * 2);
+                    
+                    const positions = cloud.geometry.attributes.position.array;
+                    const t = time + cloud.userData.offset;
+                    
+                    for (let i = 0; i < positions.length; i += 3) {
+                        positions[i] += Math.sin(t * 0.5) * 0.05;
+                        positions[i + 1] += Math.cos(t * 0.3) * 0.02;
+                        positions[i + 2] += Math.cos(t * 0.5) * 0.05;
+                    }
+                    cloud.geometry.attributes.position.needsUpdate = true;
+                    cloud.rotation.y += 0.001;
+                });
+                
+                // Sky color transition is now handled by shader
+                // skyMaterial.uniforms.topColor.value.setHex(0x87ceeb);
+                // skyMaterial.uniforms.bottomColor.value.setHex(0xffffff);
+            } else if (time >= PHASES.CLOUDS.end) {
+                cloudGroups.forEach(cloud => {
+                    if (time < PHASES.RAIN.end) {
+                        cloud.material.opacity = Math.max(0, 0.8 - (time - PHASES.CLOUDS.end) * 0.1);
+                    } else {
+                        cloud.material.opacity = 0;
+                    }
+                });
+            }
+            
+            // Rain phase
+            if (rainParticles) {
+                if (time >= PHASES.RAIN.start && time < PHASES.RAIN.end) {
+                    const progress = (time - PHASES.RAIN.start) / (PHASES.RAIN.end - PHASES.RAIN.start);
+                    rainParticles.material.opacity = Math.min(0.6, progress * 3);
+                    
+                    const positions = rainParticles.geometry.attributes.position.array;
+                    const velocities = rainParticles.geometry.attributes.velocity.array;
+                    
+                    for (let i = 0; i < positions.length; i += 3) {
+                        positions[i + 1] -= velocities[i / 3];
+                        
+                        if (positions[i + 1] < -5) {
+                            positions[i + 1] = 50;
+                        }
+                    }
+                    rainParticles.geometry.attributes.position.needsUpdate = true;
+                    
+                    // Dark sky (now handled by shader)
+                    // skyMaterial.uniforms.topColor.value.setHex(0x555555);
+                    // skyMaterial.uniforms.bottomColor.value.setHex(0x888888);
+                    ambientLight.intensity = 0.3;
+                    directionalLight.intensity = 0.4;
+                } else {
+                    rainParticles.material.opacity = 0;
+                }
+            }
+            
+            // After rain phase
+            if (time >= PHASES.AFTER_RAIN.start && time < PHASES.AFTER_RAIN.end) {
+                const progress = (time - PHASES.AFTER_RAIN.start) / (PHASES.AFTER_RAIN.end - PHASES.AFTER_RAIN.start);
+                
+                // Brighten sky (now handled by shader)
+                // const r = THREE.MathUtils.lerp(0x55, 0x87, progress);
+                // const g = THREE.MathUtils.lerp(0x55, 0xce, progress);
+                // const b = THREE.MathUtils.lerp(0x55, 0xeb, progress);
+                // skyMaterial.uniforms.topColor.value.setRGB(r / 255, g / 255, b / 255);
+                // skyMaterial.uniforms.bottomColor.value.setHex(0xffffff);
+                
+                ambientLight.intensity = THREE.MathUtils.lerp(0.3, 0.6, progress);
+                directionalLight.intensity = THREE.MathUtils.lerp(0.4, 0.8, progress);
+            }
+            
+            // Closing phase (10 fish)
+            if (closingModels.length > 0) {
+                closingModels.forEach((fish, index) => {
+                    if (time >= PHASES.CLOSING.start && time < PHASES.CLOSING.end) {
+                        fish.visible = true;
+                        const phaseProgress = (time - PHASES.CLOSING.start) / (PHASES.CLOSING.end - PHASES.CLOSING.start);
+                        const t = (time + fish.userData.offset * 0.5) * 2 * fish.userData.speedMultiplier;
+                        
+                        // サイズを時間に応じて変化（最初5、中間30、最後5）
+                        const scale = 5 + Math.sin(phaseProgress * Math.PI) * 25;
+                        fish.scale.set(scale, scale, scale);
+                        
+                        // 色の濃さを時間に応じて変化（最初薄く、中間濃く、最後薄く）
+                        const opacity = 0.2 + Math.sin(phaseProgress * Math.PI) * 0.8;
+                        fish.traverse((child) => {
+                            if (child.isMesh && child.material) {
+                                child.material.opacity = opacity;
+                            }
+                        });
+                        
+                        // 右から左へゆっくり移動（各魚異なる速度）
+                        fish.position.x = THREE.MathUtils.lerp(8, -8, phaseProgress * fish.userData.speedMultiplier);
+                        
+                        // ふわふわとした上下動
+                        fish.position.y = 5 + fish.userData.yOffset + Math.sin(t * 0.8) * 2 + Math.cos(t * 1.2) * 1;
+                        
+                        // ふわふわとした前後動
+                        fish.position.z = fish.userData.zOffset + Math.sin(t * 0.6) * 3;
+                        
+                        // わずかな揺れを追加
+                        fish.rotation.x = Math.sin(t * 0.7) * 0.1;
+                        fish.rotation.y = Math.cos(t * 0.5) * 0.15;
+                        fish.rotation.z = Math.sin(t * 0.9) * 0.08;
+                    } else {
+                        fish.visible = false;
+                    }
+                });
+            }
+            
+            // Ground animation with waves
+            const positions = ground.geometry.attributes.position.array;
+            for (let i = 0; i < positions.length; i += 3) {
+                const x = positions[i];
+                const y = positions[i + 1];
+                const idx = i / 3;
+                positions[i + 2] = groundInitialZ[idx] + 
+                                   Math.sin(x * 0.15 + time * 2) * Math.cos(y * 0.15 + time * 1.5) * 1.5 +
+                                   Math.sin(time * 3 + x * 0.1) * 0.5;
+            }
+            ground.geometry.attributes.position.needsUpdate = true;
+            
+            // Camera movement
+            camera.position.x = Math.sin(time * 0.1) * 5;
+            camera.position.z = 30 + Math.cos(time * 0.1) * 5;
+            camera.lookAt(0, 0, 0);
+        }
+
+        function animate() {
+            requestAnimationFrame(animate);
+            
+            const elapsed = (Date.now() - startTime) / 1000;
+            updatePhase(elapsed);
+            
+            renderer.render(scene, camera);
+        }
+
+        // Handle window resize
+        window.addEventListener('resize', () => {
+            camera.aspect = window.innerWidth / window.innerHeight;
+            camera.updateProjectionMatrix();
+            renderer.setSize(window.innerWidth, window.innerHeight);
+        });
+
+        animate();
+    </script>
+</body>
+</html>
